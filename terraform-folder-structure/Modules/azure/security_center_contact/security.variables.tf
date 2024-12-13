@@ -1,0 +1,1 @@
+variable "security_center_contact_data" {}

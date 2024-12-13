@@ -1,0 +1,1 @@
+variable "application_registration_data" {}

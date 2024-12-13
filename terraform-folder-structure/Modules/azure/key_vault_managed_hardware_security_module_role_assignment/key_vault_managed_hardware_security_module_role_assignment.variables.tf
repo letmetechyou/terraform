@@ -1,0 +1,1 @@
+variable "key_vault_managed_hardware_security_module_role_assignment_data" {}

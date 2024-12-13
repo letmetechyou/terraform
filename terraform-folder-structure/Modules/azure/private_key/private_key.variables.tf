@@ -1,0 +1,1 @@
+variable "tls_private_key_data" {}

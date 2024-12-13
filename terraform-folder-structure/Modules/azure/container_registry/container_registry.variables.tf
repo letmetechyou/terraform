@@ -1,0 +1,1 @@
+variable "container_registry_data" {}

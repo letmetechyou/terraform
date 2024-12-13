@@ -1,0 +1,3 @@
+output "network_interface_security_group_association_output" {
+  value = azurerm_network_interface_security_group_association.network_interface_security_group_association[*]
+}
