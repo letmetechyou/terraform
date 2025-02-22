@@ -1,0 +1,26 @@
+resources:
+    repositories:
+        - repository: template # Alias for the repository for use below.
+          type: git
+          name: module-repo # Local path to relevant code in the repository
+          ref: master
+
+extends:
+  template: azdo_pipelines/deploy.yaml@template
+  parameters:
+    pool: ""
+    workingDirectory: ""
+    location: us
+    environment: sbx
+    platform: azure
+    purpose: gcs
+    terraformModuleVersion: kevintest2
+    region: "centralus"
+    terraformBackend:
+      backendServiceArm: ""
+      serviceConnection: ""
+      backendAzureRmResourceGroupName: ""
+      backendAzureRmStorageAccountName: ""
+    deployEnvs:
+      nonprd: true
+      prd: true

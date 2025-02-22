@@ -1,0 +1,84 @@
+parameters:
+    - name: workingDirectory
+      type: string
+    - name: deployEnvs
+      type: object
+      default: {}
+    - name: pool
+      type: object
+      default: {}
+    - name: region
+      type: object
+      default: {}
+    - name: location
+      type: string
+    - name: destroy
+      type: boolean
+      default: false
+    - name: platform
+      type: string
+    - name: purpose
+      type: string
+    - name: environment
+      type: string
+    - name: terraformModuleVersion
+      type: string
+      default: ""
+    - name: terraformBackend
+      type: object
+      default: {}
+
+stages:
+    - stage: Build
+      jobs:
+          - job: artifact
+            displayName: Create Artifact
+            pool:
+                name: ${{ parameters.pool }}
+            variables:
+                - name: gitTag
+                  value: "refs/tags/${{ parameters.terraformModuleVersion }}"
+            steps:
+                - checkout: self
+                  displayName: 'Checkout Repository'
+                  clean: false
+                  path: s/src
+                - checkout: git://@${{ variables.gitTag }}
+                  displayName: "Checkout Terraform Modules"
+                  path: s/modules
+                - task: CopyFiles@2
+                  displayName: 'Copy Files to: $(build.artifactstagingdirectory)/Terraform'
+                  inputs:
+                    Contents: |
+                      $(Pipeline.Workspace)/s/src/**
+                      $(Pipeline.Workspace)/s/modules**
+                      !**/.git/**
+                      !**/.gitignore
+                    TargetFolder: $(build.artifactstagingdirectory)/Terraform
+                    CleanTargetFolder: false
+                - task: CopyFiles@2
+                  displayName: 'Copy working directory Files to: $(build.artifactstagingdirectory)/Terraform'
+                  inputs:
+
+                    SourceFolder: '$(Pipeline.Workspace)/s/src/${{ parameters.workingDirectory }}'
+                    Contents: '**'
+                    TargetFolder: $(build.artifactstagingdirectory)/Terraform
+                    CleanTargetFolder: false
+                - task: PublishBuildArtifacts@1
+                  displayName: 'Publish Artifact: drop'
+
+    - ${{ each env in parameters.deployEnvs }}:
+          - stage: deploy${{ env.key }}
+            displayName: ${{ env.key }}
+            condition: succeeded()
+            jobs:
+                - template: steps.yaml
+                  parameters:
+                      pool: ${{ parameters.pool }}
+                      region: ${{ parameters.region }}
+                      terraformBackend: ${{ parameters.terraformBackend }}
+                      platform: ${{ parameters.platform }}
+                      purpose: ${{ parameters.purpose }}
+                      environment: "${{ env.key }}"
+                      workingDirectory: ${{ parameters.workingDirectory }}
+                      destroy: ${{ parameters.destroy }}

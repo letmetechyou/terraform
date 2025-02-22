@@ -1,0 +1,90 @@
+parameters:
+  - name: environment
+    type: string
+  - name: pool
+    type: string
+  - name: workingDirectory
+    type: string
+  - name: terraformBackend
+    type: object
+  - name: destroy
+    type: boolean
+  - name: platform
+    type: string
+  - name: purpose
+    type: string
+  - name: region
+    type: string
+
+jobs:
+  - job: tf_plan
+    displayName: Terraform Plan
+    pool: ${{ parameters.pool }}
+    steps:
+        - download: current
+          artifact: drop
+        - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
+        - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
+          displayName: "Terraform : init"
+          inputs:
+              command: init
+              commandOptions: "-input=false -reconfigure"
+              workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
+              backendServiceArm: "${{ parameters.terraformBackend.backendServiceArm }}"
+              backendAzureRmResourceGroupName: ${{ parameters.terraformBackend.backendAzureRmResourceGroupName }}
+              backendAzureRmStorageAccountName: ${{ parameters.terraformBackend.backendAzureRmStorageAccountName }}
+              backendAzureRmContainerName: tfstate
+              backendAzureRmKey: "${{ parameters.platform }}/${{ parameters.region }}/${{ parameters.purpose }}-${{ parameters.environment }}.tfstate"
+        - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
+          displayName: "Terraform : validate"
+          inputs:
+              command: validate
+              workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
+        - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
+          displayName: "Terraform : plan"
+          inputs:
+              command: plan
+              workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
+              environmentServiceNameAzureRM: ${{ parameters.terraformBackend.serviceConnection }}
+              commandOptions: "-input=false -var-file=input-${{ parameters.environment }}.tfvars -out=tfplan"
+
+  - job: approval
+    displayName: Terraform Approval
+    pool: server
+    dependsOn: tf_plan
+    condition: succeeded()
+    steps:
+        - task: ManualValidation@0
+          inputs:
+              instructions: Please review the Terraform Plan before approving.
+              onTimeout: reject
+
+  - deployment: tf_apply
+    displayName: Terraform Apply
+    pool: ${{ parameters.pool }}
+    environment: ${{ parameters.environment }}
+    dependsOn: approval
+    condition: succeeded()
+    strategy:
+        runOnce:
+            deploy:
+                steps:
+                    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
+                    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
+                      displayName: "Terraform : init"
+                      inputs:
+                          command: init
+                          commandOptions: "-input=false -reconfigure"
+                          workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
+                          backendServiceArm: "${{ parameters.terraformBackend.backendServiceArm }}"
+                          backendAzureRmResourceGroupName: ${{ parameters.terraformBackend.backendAzureRmResourceGroupName }}
+                          backendAzureRmStorageAccountName: ${{ parameters.terraformBackend.backendAzureRmStorageAccountName }}
+                          backendAzureRmContainerName: tfstate
+                          backendAzureRmKey: "${{ parameters.platform }}/${{ parameters.region }}/${{ parameters.purpose }}-${{ parameters.environment }}.tfstate"
+                    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
+                      displayName: 'Terraform Apply'
+                      inputs:
+                          command: apply
+                          workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
+                          environmentServiceNameAzureRM: ${{ parameters.terraformBackend.serviceConnection }}
+                          commandOptions: "tfplan"
