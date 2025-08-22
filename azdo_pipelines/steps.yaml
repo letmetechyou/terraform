@@ -1,90 +1,191 @@
 parameters:
-  - name: environment
-    type: string
-  - name: pool
-    type: string
-  - name: workingDirectory
-    type: string
-  - name: terraformBackend
-    type: object
-  - name: destroy
-    type: boolean
-  - name: platform
-    type: string
-  - name: purpose
-    type: string
-  - name: region
-    type: string
+- name: environment
+  type: string
+- name: regionKey
+  type: string
+- name: pool
+  type: string
+- name: workingDirectory
+  type: string
+- name: terraformBackend
+  type: object
+- name: destroy
+  type: boolean
+- name: platform
+  type: string
+- name: purpose
+  type: string
+# - name: region
+#   type: string
+
 
 jobs:
-  - job: tf_plan
-    displayName: Terraform Plan
-    pool: ${{ parameters.pool }}
-    steps:
-        - download: current
-          artifact: drop
+- job: tf_plan
+  displayName: Terraform Plan
+  pool: ${{ parameters.pool }}
+  steps:
+    - download: current
+      artifact: drop
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
+      displayName: "Terraform : init"
+      inputs:
+        command: init
+        commandOptions: "-input=false -upgrade -reconfigure"
+        workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
+        backendServiceArm: "${{ parameters.terraformBackend.backendServiceArm }}"
+        backendAzureRmResourceGroupName: ${{ parameters.terraformBackend.backendAzureRmResourceGroupName }}
+        backendAzureRmStorageAccountName: ${{ parameters.terraformBackend.backendAzureRmStorageAccountName }}
+        backendAzureRmContainerName: tfstate
+        backendAzureRmKey: "${{ parameters.platform }}/${{ parameters.regionKey }}/${{ parameters.purpose }}-${{ parameters.environment }}.tfstate"
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
+      displayName: "Terraform : validate"
+      inputs:
+        command: validate
+        workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
+      displayName: "Terraform : plan"
+      inputs:
+        command: plan
+        workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
+        environmentServiceNameAzureRM: ${{ parameters.terraformBackend.serviceConnection }}
+        commandOptions: "-input=false -var-file=input-${{ parameters.environment }}.tfvars -out=tfplan -detailed-exitcode"
+    - task: Bash@3
+      displayName: "Terraform : show plan and save to file"
+      inputs:
+        targetType: 'inline'
+        workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
+        script: |
+          terraform show -no-color tfplan > tfplan.txt
+          echo "Plan saved to tfplan.txt"
+
+
+    - task: Bash@3
+      displayName: "Terraform : detect deletions"
+      inputs:
+        targetType: 'inline'
+        workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
+        script: |
+          # Extract the plan summary line
+          PLAN_SUMMARY=$(grep -E "Plan: [0-9]+ to add, [0-9]+ to change, [0-9]+ to destroy" tfplan.txt)
+          echo "Plan summary found: $PLAN_SUMMARY"
+          
+          # Extract the number to destroy
+          DESTROY_COUNT=$(echo "$PLAN_SUMMARY" | grep -oE "[0-9]+ to destroy" | grep -oE "[0-9]+")
+          echo "Resources to destroy: $DESTROY_COUNT"
+          
+          # Check for replacements
+          REPLACE_COUNT=$(grep -c "must be replaced\|will be replaced\|force replacement" tfplan.txt)
+          echo "Resources to replace: $REPLACE_COUNT"
+          
+          # If either destroy or replace count is greater than 0, set the flag to true
+          if [[ -n "$DESTROY_COUNT" && "$DESTROY_COUNT" -gt 0 ]] || [[ "$REPLACE_COUNT" -gt 0 ]]; then
+            echo "Destructive changes detected in plan, setting flag to true"
+            echo "true" > deletion_detected.txt
+            echo "##vso[task.setvariable variable=DeletionsDetected;isOutput=true]true"
+          else
+            echo "No destructive changes detected in plan, setting flag to false"
+            echo "false" > deletion_detected.txt
+            echo "##vso[task.setvariable variable=DeletionsDetected;isOutput=true]false"
+          fi
+          
+          # Show the result
+          echo "Detection result file content:"
+          cat deletion_detected.txt
+      name: detectionStep
+
+
+    # Publish the plan as an artifact for the approval jobs
+    - task: PublishPipelineArtifact@1
+      displayName: "Publish Terraform Plan"
+      inputs:
+        targetPath: '$(Pipeline.Workspace)/drop/Terraform'
+        artifact: 'terraform-plan-${{ parameters.environment }}-${{ parameters.regionKey }}'
+
+
+# Regular approval for non-destructive changes
+- job: standard_approval
+  displayName: Standard Approval (${{ parameters.environment}}-${{ parameters.regionKey }})
+  pool: server
+  dependsOn: tf_plan
+  variables:
+    DeletionsDetected: $[ dependencies.tf_plan.outputs['detectionStep.DeletionsDetected'] ]
+  condition: and(succeeded(), eq(variables.DeletionsDetected, 'false'), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+  steps:
+    - task: ManualValidation@0
+      displayName: "Standard Plan Approval"
+      inputs:
+        instructions: |
+          Please review the Terraform Plan before approving.
+          No destructive changes detected.
+        onTimeout: reject
+
+
+# Special approval for destructive changes requiring  team
+- job: services_approval
+  displayName:  Approval Required for ${{ parameters.environment}}-${{ parameters.regionKey }}
+  pool: server
+  dependsOn: tf_plan
+  variables:
+    DeletionsDetected: $[ dependencies.tf_plan.outputs['detectionStep.DeletionsDetected'] ]
+  condition: and(succeeded(), eq(variables.DeletionsDetected, 'true'), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+  steps:
+    - task: ManualValidation@0
+      displayName: "CRITICAL: Resource Deletion Approval"
+      timeoutInMinutes: 4320 # 3 days
+      inputs:
+        instructions: |
+          ⚠️ 💀 🧳 ATTENTION: YOU ARE ABOUT TO DELETE EXISTING RESOURCES 👨‍🦯 💀 ⚠️
+
+          Environment: ${{ parameters.environment}}-${{ parameters.regionKey }}
+          
+          This Terraform plan contains resources that will be DELETED or REPLACED.
+          Please carefully review the plan before approving.
+          
+          This approval requires a member of the team.
+          
+          IMPORTANT: According to company policy, the person who submitted this pipeline
+          cannot approve their own destructive changes. Another team member must review
+          and approve.
+        onTimeout: reject
+        notifyUsers: |
+          name@letmetechyou.com
+
+
+# Conditional deployment based on which approval path was taken
+- deployment: tf_apply
+  displayName: Terraform Apply ${{ parameters.environment}}-${{ parameters.regionKey }}
+  pool: ${{ parameters.pool }}
+  environment: ${{ parameters.environment}}-${{ parameters.regionKey }}
+  dependsOn:
+  - standard_approval
+  - services_approval
+  condition: or(
+    succeeded('standard_approval'),
+    succeeded('services_approval'))
+  strategy:
+    runOnce:
+      deploy:
+        steps:
         - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
         - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
           displayName: "Terraform : init"
           inputs:
-              command: init
-              commandOptions: "-input=false -reconfigure"
-              workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
-              backendServiceArm: "${{ parameters.terraformBackend.backendServiceArm }}"
-              backendAzureRmResourceGroupName: ${{ parameters.terraformBackend.backendAzureRmResourceGroupName }}
-              backendAzureRmStorageAccountName: ${{ parameters.terraformBackend.backendAzureRmStorageAccountName }}
-              backendAzureRmContainerName: tfstate
-              backendAzureRmKey: "${{ parameters.platform }}/${{ parameters.region }}/${{ parameters.purpose }}-${{ parameters.environment }}.tfstate"
+            command: init
+            commandOptions: "-input=false -reconfigure"
+            workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
+            backendServiceArm: "${{ parameters.terraformBackend.backendServiceArm }}"
+            backendAzureRmResourceGroupName: ${{ parameters.terraformBackend.backendAzureRmResourceGroupName }}
+            backendAzureRmStorageAccountName: ${{ parameters.terraformBackend.backendAzureRmStorageAccountName }}
+            backendAzureRmContainerName: tfstate
+            backendAzureRmKey: "${{ parameters.platform }}/${{ parameters.regionKey }}/${{ parameters.purpose }}-${{ parameters.environment }}.tfstate"
         - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
-          displayName: "Terraform : validate"
+          displayName: 'Terraform Apply'
           inputs:
-              command: validate
-              workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
-        - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
-          displayName: "Terraform : plan"
-          inputs:
-              command: plan
-              workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
-              environmentServiceNameAzureRM: ${{ parameters.terraformBackend.serviceConnection }}
-              commandOptions: "-input=false -var-file=input-${{ parameters.environment }}.tfvars -out=tfplan"
+            command: apply
+            workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
+            environmentServiceNameAzureRM: ${{ parameters.terraformBackend.serviceConnection }}
+            commandOptions: "tfplan"
 
-  - job: approval
-    displayName: Terraform Approval
-    pool: server
-    dependsOn: tf_plan
-    condition: succeeded()
-    steps:
-        - task: ManualValidation@0
-          inputs:
-              instructions: Please review the Terraform Plan before approving.
-              onTimeout: reject
 
-  - deployment: tf_apply
-    displayName: Terraform Apply
-    pool: ${{ parameters.pool }}
-    environment: ${{ parameters.environment }}
-    dependsOn: approval
-    condition: succeeded()
-    strategy:
-        runOnce:
-            deploy:
-                steps:
-                    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
-                    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
-                      displayName: "Terraform : init"
-                      inputs:
-                          command: init
-                          commandOptions: "-input=false -reconfigure"
-                          workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
-                          backendServiceArm: "${{ parameters.terraformBackend.backendServiceArm }}"
-                          backendAzureRmResourceGroupName: ${{ parameters.terraformBackend.backendAzureRmResourceGroupName }}
-                          backendAzureRmStorageAccountName: ${{ parameters.terraformBackend.backendAzureRmStorageAccountName }}
-                          backendAzureRmContainerName: tfstate
-                          backendAzureRmKey: "${{ parameters.platform }}/${{ parameters.region }}/${{ parameters.purpose }}-${{ parameters.environment }}.tfstate"
-                    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV4@4
-                      displayName: 'Terraform Apply'
-                      inputs:
-                          command: apply
-                          workingDirectory: "$(Pipeline.Workspace)/drop/Terraform"
-                          environmentServiceNameAzureRM: ${{ parameters.terraformBackend.serviceConnection }}
-                          commandOptions: "tfplan"
+

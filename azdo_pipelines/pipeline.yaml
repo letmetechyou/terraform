@@ -1,26 +1,57 @@
+trigger:
+  branches:
+    include:
+    - refs/heads/master
+  paths:
+    include:
+    - /path/to/folder
+
 resources:
     repositories:
-        - repository: template # Alias for the repository for use below.
+        - repository:  # Alias for the repository for use below.
           type: git
-          name: module-repo # Local path to relevant code in the repository
+          name:  # Local path to relevant code in the repository
           ref: master
 
 extends:
-  template: azdo_pipelines/deploy.yaml@template
+  template: azdo_pipelines/deploy.yaml@reponame #points to the deploy yaml
   parameters:
-    pool: ""
-    workingDirectory: ""
-    location: us
-    environment: sbx
-    platform: azure
-    purpose: gcs
-    terraformModuleVersion: kevintest2
-    region: "centralus"
-    terraformBackend:
-      backendServiceArm: ""
-      serviceConnection: ""
-      backendAzureRmResourceGroupName: ""
-      backendAzureRmStorageAccountName: ""
-    deployEnvs:
-      nonprd: true
-      prd: true
+    pool: "" #points to the pull you want to run from
+    workingDirectory: "terraform" #the current directory your work lives in
+    #location: us #location of code 
+    platform: azure #cloud platform code is being deployed to (used to build the state file)
+    purpose: sbxnetworking  #purpose of the code. make this the name of the folder (used to build the state file)
+    terraformModuleVersion: kevintest2 #module version to use
+    #region: "westus"  #region code is being deployed to (used to build the state file)
+    deployEnvs: #this determines the env to deploy true false dont mean anything at the current moment
+      dev: 
+        us:
+          backendServiceArm: ""
+          serviceConnection: ""
+          backendAzureRmResourceGroupName: ""
+          backendAzureRmStorageAccountName: ""
+
+      qa:
+        us:
+          backendServiceArm: ""
+          serviceConnection: ""
+          backendAzureRmResourceGroupName: ""
+          backendAzureRmStorageAccountName: ""
+      int:
+        us:
+          backendServiceArm: ""
+          serviceConnection: ""
+          backendAzureRmResourceGroupName: ""
+          backendAzureRmStorageAccountName: ""
+      stg:
+        us:
+          backendServiceArm: ""
+          serviceConnection: ""
+          backendAzureRmResourceGroupName: ""
+          backendAzureRmStorageAccountName: ""
+      prd:
+        us:
+          backendServiceArm: ""
+          serviceConnection: ""
+          backendAzureRmResourceGroupName: ""
+          backendAzureRmStorageAccountName: ""
