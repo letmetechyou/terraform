@@ -70,6 +70,8 @@ stages:
         #check if region is enabled (default to true)
           - ${{ if ne(coalesce(region.value.enabled, true), false) }}:
             - stage: deploy${{ env.key }}${{ region.key }}
+              variables:
+                - group: ${{ parameters.variableGroup }}
               displayName: deploy ${{ env.key }} - ${{ region.key}}
               condition: succeeded()
               jobs:
